@@ -12,13 +12,15 @@
 usage() {
     echo -e "Usage: $(basename $0) [options]"
     echo -e "\tStarts live binlog sync using mysqlbinlog utility\n"
+    echo -e "   --user=              username to login to mysql"
+    echo -e "   --password=          password for the username"
+    echo -e "   --host=              mysql host"
+    echo -e "   --start-file=        start copying logs from this file"
     echo -e "   --backup-dir=        Backup destination directory (required)"
     echo -e "   --log-dir=           Log directory (defaults to '/var/log/syncbinlog')"
-    echo -e "   --prefix=            Backup file prefix (defaults to 'backup-')"
-    echo -e "   --mysql-conf=        Mysql defaults file for client auth (defaults to './.my.cnf')"
     echo -e "   --compress           Compress backuped binlog files"
     echo -e "   --compress-app=      Compression app (defaults to 'pigz'). Compression parameters can be given as well (e.g. pigz -p6 for 6 threaded compression)"
-    echo -e "   --rotate=X           Rotate backup files for X days (defaults to 30)"
+    echo -e "   --rotate=X           Rotate backup files for X days, 0 for no deletion (defaults to 0)"
     echo -e "   --verbose=           Write logs to stdout as well"
     exit 1
 }
@@ -38,21 +40,28 @@ log () {
 }
 
 # Parse configuration parameters
+MYSQL_OPTIONS=""
 parse_config() {
     for arg in ${ARGS}
     do
         case ${arg} in
-            --prefix=*)
-            BACKUP_PREFIX="${arg#*=}"
+            --user=*)
+            MYSQL_OPTIONS="${MYSQL_OPTIONS} --user=${arg#*=}"
+            ;;
+            --password=*)
+            MYSQL_OPTIONS="${MYSQL_OPTIONS} --password=${arg#*=}"
+            ;;
+            --host=*)
+            MYSQL_OPTIONS="${MYSQL_OPTIONS} --host=${arg#*=}"
+            ;;
+            --start-file=*)
+            BINLOG_FIRST_SYNC_FILE="${arg#*=}"
             ;;
             --log-dir=*)
             LOG_DIR="${arg#*=}"
             ;;
             --backup-dir=*)
             BACKUP_DIR="${arg#*=}"
-            ;;
-            --mysql-conf=*)
-            MYSQL_CONFIG_FILE="${arg#*=}"
             ;;
             --compress)
             COMPRESS=true
@@ -79,12 +88,12 @@ parse_config() {
 
 # Compress backup files that are currently open
 compress_files() {
-    # find last modified binlog backup file (except the *.original ones)
-    LAST_MODIFIED_BINLOG_FILE=$(find ${BACKUP_DIR} -type f -name "${BACKUP_PREFIX}${BINLOG_BASENAME}*" -printf "%T@ %p\n" | sort -n | tail -1 | awk '{print $2}' | grep -P ".+\.[0-9]+$")
+    # find last modified binlog backup file
+    LAST_MODIFIED_BINLOG_FILE=$(find ${BACKUP_DIR} -type f -printf "%T@ %p\n" | sort -n | tail -1 | awk '{print $2}' | grep -P ".+\.[0-9]+$")
     LAST_MODIFIED_BINLOG_FILE=$(basename ${LAST_MODIFIED_BINLOG_FILE})
 
     # find all binlog backup files sorted by modification date
-    SORTED_BINLOG_FILES=$(find ${BACKUP_DIR} -type f -name "${BACKUP_PREFIX}${BINLOG_BASENAME}*" -printf "%T@ %p\n" | sort -n | awk '{print $2}' | grep -P ".+\.[0-9]+(|\.original)$")
+    SORTED_BINLOG_FILES=$(find ${BACKUP_DIR} -type f -printf "%T@ %p\n" | sort -n | awk '{print $2}' | grep -v ".gz")
 
     for filename in ${SORTED_BINLOG_FILES}
     do
@@ -102,8 +111,12 @@ compress_files() {
 
 # Rotate older backups
 rotate_files() {
+    if [ "{ROTATE_DAYS}" == "0" ]; then
+        return 0
+    fi
+
     # find binlog backup files older than rotation period
-    ROTATED_FILES=$(find ${BACKUP_DIR} -type f -name "${BACKUP_PREFIX}${BINLOG_BASENAME}*" -mtime +${ROTATE_DAYS} | grep -P ".+\.[0-9]+(|\.original)$")
+    ROTATED_FILES=$(find ${BACKUP_DIR} -type f -mtime +${ROTATE_DAYS})
     for filename in ${ROTATED_FILES}
     do
         log "Rotation: deleting ${filename}"
@@ -127,13 +140,11 @@ die() {
 trap die SIGINT SIGTERM
 
 # Default configuration parameters
-MYSQL_CONFIG_FILE=./.my.cnf
 BACKUP_DIR=""
 LOG_DIR=/var/log/syncbinlog
-BACKUP_PREFIX="backup-"
 COMPRESS=false
 COMPRESS_APP="pigz -p$(($(nproc) - 1))"
-ROTATE_DAYS=30
+ROTATE_DAYS=0
 VERBOSE=false
 
 ARGS="$@"
@@ -145,13 +156,7 @@ if [[ -z ${BACKUP_DIR} ]]; then
     exit 1
 fi
 
-if [[ ! -f ${MYSQL_CONFIG_FILE} ]]; then
-    echo "ERROR: Mysql client config file ${MYSQL_CONFIG_FILE} does not exist."
-    exit 1
-fi
-
 APP_PID=0
-MYSQL_CONFIG_FILE=$(realpath ${MYSQL_CONFIG_FILE})
 BACKUP_DIR=$(realpath ${BACKUP_DIR})
 LOG_DIR=$(realpath ${LOG_DIR})
 
@@ -162,24 +167,8 @@ cd ${BACKUP_DIR} || exit 1
 log "Initializing binlog sync"
 log "Backup destination: $BACKUP_DIR"
 log "Log destination: $LOG_DIR"
-log "Reading mysql client configuration from $MYSQL_CONFIG_FILE"
-
-BINLOG_BASENAME=$(mysql --defaults-extra-file=${MYSQL_CONFIG_FILE} -Bse "SHOW GLOBAL VARIABLES LIKE 'log_bin_basename'")
-if [[ $? -eq "1" ]]; then
-    log "Please, check your mysql credentials" "ERROR"
-    exit 1
-fi
 
 ${COMPRESS} == true && log "Compression enabled"
-
-BINLOG_BASENAME=$(basename `echo ${BINLOG_BASENAME} | tail -1 | awk '{ print $2 }'`)
-log "Binlog file basename is $BINLOG_BASENAME"
-
-BINLOG_INDEX_FILE=`mysql --defaults-extra-file=${MYSQL_CONFIG_FILE} -Bse "SHOW GLOBAL VARIABLES LIKE 'log_bin_index'" | tail -1 | awk '{ print $2 }'`
-log "Binlog index file is $BINLOG_BASENAME"
-
-BINLOG_LAST_FILE=`tail -1 "$BINLOG_INDEX_FILE"`
-log "Most recent binlog file is $BINLOG_LAST_FILE"
 
 while :
 do
@@ -202,23 +191,23 @@ do
         rotate_files
 
         # sleep and continue
-        sleep 10
+        sleep 30
         continue
     fi
 
     # Check last backup file to continue from (2> /dev/null suppresses error output)
-    LAST_BACKUP_FILE=`ls -1 ${BACKUP_DIR}/${BACKUP_PREFIX}* 2> /dev/null | grep -v ".original" | tail -n 1`
-
-    BINLOG_SYNC_FILE_NAME=""
+    LAST_BACKUP_FILE=`ls -1 ${BACKUP_DIR}/* 2> /dev/null | tail -n 1`
 
     if [[ -z ${LAST_BACKUP_FILE} ]]; then
-        log "No backup file found, starting from oldest binary log in the server"
+        log "No backup file found"
 
-        # If there is no backup yet, find the first binlog file to start copying
-        BINLOG_START_FILE=`head -n 1 "$BINLOG_INDEX_FILE"`
-        log "The oldest binlog file is ${BINLOG_START_FILE}"
+        # If there is no backup yet, use the file provided in the args
+        if [[ -z "${BINLOG_FIRST_SYNC_FILE}" ]]; then
+            echo "ERROR: Please, specify both start file and position for binlogs."
+            exit 1
+        fi
 
-        BINLOG_SYNC_FILE_NAME=`basename "${BINLOG_START_FILE}"`
+        log "Starting to copy from ${BINLOG_FIRST_SYNC_FILE}"
     else
         # If mysqlbinlog crashes/exits in the middle of execution, we cant know the last position reliably.
         # Thats why restart syncing from the beginning of the same binlog file
@@ -229,25 +218,16 @@ do
         # If the last backup file is too old, the relevant binlog file might not exist anymore
         # In this case, there will be a gap in binlog backups
 
-        # Storing a backup of the latest binlog backup file before exit/crash
-        FILE_SIZE=$(stat -c%s ${BACKUP_DIR}/${LAST_BACKUP_FILE})
-        if [[ ${FILE_SIZE} -gt 0 ]]; then
-            log "Backing up last binlog file ${LAST_BACKUP_FILE}"
-            mv "${BACKUP_DIR}/${LAST_BACKUP_FILE}" "${BACKUP_DIR}/${LAST_BACKUP_FILE}.original"
-        fi
-
-        # strip backup file prefix to get real binlog name
-        LAST_BACKUP_FILE=${LAST_BACKUP_FILE/$BACKUP_PREFIX/}
-        BINLOG_SYNC_FILE_NAME=`basename "${LAST_BACKUP_FILE}"`
+        BINLOG_FIRST_SYNC_FILE=`basename "${LAST_BACKUP_FILE}"`
     fi
 
-    log "Starting live binlog backup from ${BINLOG_SYNC_FILE_NAME}"
+    log "Starting live binlog backup from ${BINLOG_FIRST_SYNC_FILE}"
 
-    mysqlbinlog --defaults-extra-file=${MYSQL_CONFIG_FILE} \
+    mysqlbinlog ${MYSQL_OPTIONS} \
         --raw --read-from-remote-server --stop-never \
         --verify-binlog-checksum \
-        --result-file=${BACKUP_PREFIX} \
-        ${BINLOG_SYNC_FILE_NAME} >> "${LOG_DIR}/status.log" & APP_PID=$!
+        --result-file='' \
+        ${BINLOG_FIRST_SYNC_FILE} >> "${LOG_DIR}/status.log" & APP_PID=$!
 
     log "mysqlbinlog PID=$APP_PID"
 
