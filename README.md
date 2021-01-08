@@ -21,28 +21,30 @@ This will output:
 
 ```
 Usage: syncbinlog.sh [options]
-    Starts live binlog sync using mysqlbinlog utility
+	Starts live binlog sync using mysqlbinlog utility
 
-  --backup-dir=        Backup destination directory (required)
-  --log-dir=           Log directory (defaults to '/var/log/syncbinlog')
-  --prefix=            Backup file prefix (defaults to 'backup-')
-  --mysql-conf=        Mysql defaults file for client auth (defaults to './.my.cnf')
-  --compress           Compress backuped binlog files
-  --compress-app=      Compression app (defaults to 'pigz -p{number-of-cores - 1}'). Compression parameters can be given as well (e.g. pigz -p6 for 6 threaded compression)
-  --rotate=X           Rotate backup files for X days (defaults to 30)
-  --verbose=           Write logs to stdout as well
+   --user=              username to login to mysql
+   --password=          password for the username
+   --host=              mysql host
+   --start-file=        start copying logs from this file
+   --backup-dir=        Backup destination directory (required)
+   --log-dir=           Log directory (defaults to '/var/log/syncbinlog')
+   --compress           Compress backuped binlog files
+   --compress-app=      Compression app (defaults to 'pigz'). Compression parameters can be given as well (e.g. pigz -p6 for 6 threaded compression)
+   --rotate=X           Rotate backup files for X days, 0 for no deletion (defaults to 0)
+   --verbose=           Write logs to stdout as well
 ```
 
 Example: Backup binlog files of last 10 days and compress them
 
-`./syncbinlog.sh --backup-dir=/mnt/backup --prefix="mybackup-" --compress --rotate=10`
+`./syncbinlog.sh --backup-dir=/mnt/backup --compress --rotate=10`
 
 # Notes
 
 - In a production database server, it should be controlled by a process manager such as `systemd` or `supervisord` to have more reliable start/restart behaviour.
-- `mysqlbinlog` utility copies the binlog files in real-time, however compression is only applied for files older than the one being written at the time. This happens when: 
+- `mysqlbinlog` utility copies the binlog files in real-time, however compression is only applied for files older than the one being written at the time. This happens when:
     - Mysql flushes the log files after a certain time or certain file size. (See `expire_logs_days` and `max_binlog_size`)
-    - `FLUSH LOGS` is executed manually or by mysqldump etc. 
+    - `FLUSH LOGS` is executed manually or by mysqldump etc.
 - `mysqlbinlog` utility requires the user to have `REPLICATION SLAVE` privilege
 
 # Resources
