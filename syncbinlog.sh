@@ -16,6 +16,7 @@ usage() {
     echo -e "   --password=          password for the username"
     echo -e "   --host=              mysql host"
     echo -e "   --start-file=        start copying logs from this file"
+    echo -e "   --s3-path=           path to s3 to upload binlog files"
     echo -e "   --backup-dir=        Backup destination directory (required)"
     echo -e "   --log-dir=           Log directory (defaults to '/var/log/syncbinlog')"
     echo -e "   --compress           Compress backuped binlog files"
@@ -56,6 +57,9 @@ parse_config() {
             ;;
             --start-file=*)
             BINLOG_FIRST_SYNC_FILE="${arg#*=}"
+            ;;
+            --s3-path=*)
+            S3_SYNC_PATH="${arg#*=}"
             ;;
             --log-dir=*)
             LOG_DIR="${arg#*=}"
@@ -107,6 +111,14 @@ compress_files() {
         ${COMPRESS_APP} --force ${filename} > "${LOG_DIR}/status.log"
         log "Compressed ${filename}"
     done
+}
+
+s3_sync_files() {
+    if [[ -z "{S3_SYNC_PATH}" ]]; then
+        return 0
+    fi
+
+    aws s3 sync ${BACKUP_DIR} ${S3_SYNC_PATH} --exclude "*" --include "*.gz"
 }
 
 # Rotate older backups
@@ -186,6 +198,9 @@ do
     if [[ ${RUNNING} == true ]]; then
         # check older backups to compress
         ${COMPRESS} == true && compress_files
+
+        # sync with s3
+        s3_sync_files
 
         # check file timestamps to apply rotation
         rotate_files
