@@ -19,8 +19,6 @@ usage() {
     echo -e "   --s3-path=           path to s3 to upload binlog files"
     echo -e "   --backup-dir=        Backup destination directory (required)"
     echo -e "   --log-dir=           Log directory (defaults to '/var/log/syncbinlog')"
-    echo -e "   --compress           Compress backuped binlog files"
-    echo -e "   --compress-app=      Compression app (defaults to 'pigz'). Compression parameters can be given as well (e.g. pigz -p6 for 6 threaded compression)"
     echo -e "   --rotate=X           Rotate backup files for X days, 0 for no deletion (defaults to 0)"
     echo -e "   --verbose=           Write logs to stdout as well"
     exit 1
@@ -66,12 +64,6 @@ parse_config() {
             ;;
             --backup-dir=*)
             BACKUP_DIR="${arg#*=}"
-            ;;
-            --compress)
-            COMPRESS=true
-            ;;
-            --compress-app=*)
-            COMPRESS_APP="${arg#*=}"
             ;;
             --rotate=*)
             ROTATE_DAYS="${arg#*=}"
@@ -154,7 +146,6 @@ trap die SIGINT SIGTERM
 # Default configuration parameters
 BACKUP_DIR=""
 LOG_DIR=/var/log/syncbinlog
-COMPRESS=false
 COMPRESS_APP="pigz -p$(($(nproc) - 1))"
 ROTATE_DAYS=0
 VERBOSE=false
@@ -180,8 +171,6 @@ log "Initializing binlog sync"
 log "Backup destination: $BACKUP_DIR"
 log "Log destination: $LOG_DIR"
 
-${COMPRESS} == true && log "Compression enabled"
-
 while :
 do
     RUNNING=false
@@ -197,7 +186,7 @@ do
 
     if [[ ${RUNNING} == true ]]; then
         # check older backups to compress
-        ${COMPRESS} == true && compress_files
+        compress_files
 
         # sync with s3
         s3_sync_files
