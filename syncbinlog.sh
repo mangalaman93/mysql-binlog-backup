@@ -115,7 +115,7 @@ s3_sync_files() {
 
 # Rotate older backups
 rotate_files() {
-    if [ "{ROTATE_DAYS}" == "0" ]; then
+    if [ "${ROTATE_DAYS}" == "0" ]; then
         return 0
     fi
 
